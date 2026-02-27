@@ -8,12 +8,18 @@ import time
 
 import voluptuous as vol
 
-from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
-from homeassistant.helpers.entity import Entity
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    CONF_NAME,
+    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    EVENT_HOMEASSISTANT_STOP,
+)
 import homeassistant.helpers.config_validation as cv
-from homeassistant.components.sensor import PLATFORM_SCHEMA
-
-REQUIREMENTS = ["https://github.com/mrk-its/py-sds011/archive/v0.9.zip#py-sds011==0.9"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +27,11 @@ CONF_SERIAL_DEVICE = "serial_device"
 CONF_MEASURE_INTERVAL = "measure_interval"
 CONF_WARMUP_DELAY = "warmup_delay"
 CONF_NUMBER_OF_MEASUREMENTS = "number_of_measurements"
+
+SENSOR_TYPES = {
+    "PM2.5": SensorDeviceClass.PM25,
+    "PM10": SensorDeviceClass.PM10,
+}
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -60,7 +71,7 @@ class Collector(threading.Thread):
     ):
         import sds011
 
-        super(Collector, self).__init__()
+        super().__init__()
         self._finish_event = threading.Event()
 
         self._sleep = warmup_delay.total_seconds() > 0
@@ -74,7 +85,7 @@ class Collector(threading.Thread):
         self._sensor = sds011.SDS011(device, use_query_mode=True)
         self._sensor.sleep(self._sleep)
 
-        self._entities = [Sensor(name, "PM2.5"), Sensor(name, "PM10")]
+        self._entities = [SDS011Sensor(name, "PM2.5"), SDS011Sensor(name, "PM10")]
 
     def get_entities(self):
         return self._entities
@@ -100,7 +111,7 @@ class Collector(threading.Thread):
 
             for entity, value in zip(self._entities, avg_measurements):
                 if value is not None:
-                    entity.state = round(value, 1)
+                    entity.update_value(round(value, 1))
 
             if self._sleep:
                 self._sensor.sleep()
@@ -116,29 +127,19 @@ class Collector(threading.Thread):
         self.join()
 
 
-class Sensor(Entity):
-    unit_of_measurement = "µg/m³"
+class SDS011Sensor(SensorEntity):
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = CONCENTRATION_MICROGRAMS_PER_CUBIC_METER
+    _attr_should_poll = False
 
     def __init__(self, name, kind):
-        self._name = name
-        self._kind = kind
-        self._state = None
+        self._attr_name = " ".join(filter(bool, (name, kind)))
+        self._attr_device_class = SENSOR_TYPES[kind]
+        self._attr_native_value = None
 
-    def should_poll(self):
-        return False
-
-    @property
-    def name(self):
-        return " ".join(filter(bool, (self._name, self._kind)))
-
-    @property
-    def state(self):
-        return self._state
-
-    @state.setter
-    def state(self, value):
-        self._state = value
-        _LOGGER.info("%s: %s", self.name, value)
+    def update_value(self, value):
+        self._attr_native_value = value
+        _LOGGER.info("%s: %s", self._attr_name, value)
 
         if self.hass:
             self.schedule_update_ha_state()
